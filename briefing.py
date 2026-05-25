@@ -231,25 +231,47 @@ def gemini_translate_and_analyze(news: list, indices: dict, btc: dict | None) ->
 - 한국 시중은행 대출금리·예금금리와의 연결고리 명시
 - "금리가 오르면/내리면 내 이자는 어떻게 되나" 관점으로 서술
 
-### 4. 한국 거주자 기준 실생활 영향 (항목별, 각 1~2문장)
+### 4. 미국 투자자 심리 (2~3문장)
+지금 미국 투자자들이 이 뉴스를 어떻게 읽고 있는지 서술:
+- 월가(Wall Street) 전반의 분위기: 탐욕인가, 공포인가, 관망인가
+- 어떤 자산을 사고 있고 어떤 자산을 팔고 있는지
+- 단기 트레이더와 장기 투자자의 시각 차이가 있다면 함께 설명
+
+### 5. 한국 거주자 기준 실생활 영향 (항목별, 각 1문장)
 반드시 한국 생활 맥락으로만 작성:
-- 대출: 주택담보대출(주담대)·전세대출·신용대출 변동금리 보유자 기준
+- 대출: 주택담보대출(주담대)·전세대출 변동금리 보유자 기준
 - 예금: 국내 은행 정기예금·적금 금리 변화 가능성
-- 주식: 국내 KOSPI/KOSDAQ + 미국 주식 투자자 입장에서 유리·불리한 섹터
-- 환율: 원/달러 환율 방향 → 해외직구, 해외여행, 달러 예금 보유자 영향
-- 물가: 수입 원자재·에너지 가격 변화가 한국 마트·주유소 물가에 미칠 영향
+- 주식: KOSPI/KOSDAQ + 미국주식 투자자 입장에서 유리·불리한 섹터
+- 환율: 원/달러 방향 → 해외직구, 해외여행, 달러 자산 보유자 영향
+- 물가: 수입 원자재·에너지가 한국 마트·주유소 물가에 미칠 영향
+
+### 6. 한국 투자자 대응전략 (항목별, 각 1문장)
+위 영향 분석을 바탕으로 지금 당장 취할 수 있는 실질적 행동 조언:
+- 대출: 고정금리 전환 검토 여부, 상환 우선순위 등
+- 예금: 만기 조정, 금리 높은 상품 갈아타기 등
+- 주식: 비중 조절 방향, 주목할 섹터 또는 피할 섹터
+- 환율: 달러 환전 타이밍, 달러 자산 비중 조절
+- 물가: 소비 패턴 조정 또는 실물 자산 관련 행동
 
 ## 출력 형식 (반드시 유효한 JSON만, 다른 텍스트 금지)
 {{
   "translations": ["번역1", "번역2", "번역3", "번역4", "번역5"],
   "economic_interpretation": "경제적 해석 2~3문장",
   "rate_outlook": "금리 시사점 2~3문장",
-  "personal_impact": {{
-    "대출": "주담대·전세대출 등 한국 대출 영향",
-    "예금": "국내 은행 예금·적금 영향",
-    "주식": "KOSPI/미국주식 투자자 영향",
-    "환율": "원달러 환율 및 실생활 영향",
-    "물가": "한국 소비자 물가 영향"
+  "us_investor_sentiment": "미국 투자자 심리 2~3문장",
+  "korean_impact": {{
+    "대출": "한국 대출 영향 1문장",
+    "예금": "한국 예금 영향 1문장",
+    "주식": "KOSPI/미국주식 영향 1문장",
+    "환율": "원달러 영향 1문장",
+    "물가": "한국 물가 영향 1문장"
+  }},
+  "korean_strategy": {{
+    "대출": "대출 대응전략 1문장",
+    "예금": "예금 대응전략 1문장",
+    "주식": "주식 대응전략 1문장",
+    "환율": "환율 대응전략 1문장",
+    "물가": "물가 대응전략 1문장"
   }}
 }}
 """
@@ -346,14 +368,26 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news, ai) -> str
             lines.append("*📊 금리 전망*")
             lines.append(ai["rate_outlook"])
 
-        # 실생활 영향
-        if ai and ai.get("personal_impact"):
+        # 미국 투자자 심리
+        if ai and ai.get("us_investor_sentiment"):
             lines.append("")
-            lines.append("*💬 나에게 미치는 영향*")
-            icons = {"대출": "🏠", "예금": "🏦", "주식": "📈", "환율": "💱", "물가": "🛒"}
-            for key, val in ai["personal_impact"].items():
-                icon = icons.get(key, "•")
-                lines.append(f"{icon} *{key}:* {val}")
+            lines.append("*🇺🇸 미국 투자자 심리*")
+            lines.append(ai["us_investor_sentiment"])
+
+        # 한국 거주자 영향
+        icons = {"대출": "🏠", "예금": "🏦", "주식": "📈", "환율": "💱", "물가": "🛒"}
+        if ai and ai.get("korean_impact"):
+            lines.append("")
+            lines.append("*🇰🇷 한국 거주자 영향*")
+            for key, val in ai["korean_impact"].items():
+                lines.append(f"{icons.get(key, '•')} *{key}:* {val}")
+
+        # 한국 대응전략
+        if ai and ai.get("korean_strategy"):
+            lines.append("")
+            lines.append("*⚡ 한국 투자자 대응전략*")
+            for key, val in ai["korean_strategy"].items():
+                lines.append(f"{icons.get(key, '•')} *{key}:* {val}")
 
     # ── 암호화폐 ──
     btc = next((c for c in coins if c["symbol"] == "btc"), None)
