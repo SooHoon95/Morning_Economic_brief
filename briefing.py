@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-매일 아침 금융 브리핑 봇 (완전 무료 버전)
+매일 아침 금융 브리핑 봇
 미국 주식 + 암호화폐 동향을 한국어로 요약해 텔레그램 전송
+뉴스 한글 번역/해설은 Google Gemini API (무료) 사용
 """
 
 import os
+import json
 import requests
 import yfinance as yf
 from datetime import datetime
@@ -15,6 +17,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # 선택, 없으면 영어 헤드라인만
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -26,6 +29,11 @@ def arrow(pct: float) -> str:
 def fmt_pct(pct: float) -> str:
     sign = "+" if pct > 0 else ""
     return f"{sign}{pct:.2f}%"
+
+
+def md_escape(text: str) -> str:
+    """텔레그램 Markdown(v1)에서 링크 텍스트 안의 ']' 등을 안전하게"""
+    return text.replace("[", "(").replace("]", ")")
 
 
 def fetch_stock_indices() -> dict:
@@ -152,23 +160,72 @@ def fetch_market_news() -> list:
         return []
 
 
+def gemini_translate_and_analyze(news: list, indices: dict, btc: dict | None) -> dict | None:
+    """Gemini로 뉴스 한글 번역 + 초보자용 5줄 해설"""
+    if not GEMINI_API_KEY or not news:
+        return None
+
+    headlines = [n["title"] for n in news[:5]]
+    market_snapshot = {
+        "indices": {k: v.get("change_pct") for k, v in indices.items()},
+        "btc_24h_change": round(btc.get("price_change_percentage_24h") or 0, 2) if btc else None,
+    }
+
+    prompt = f"""당신은 친절한 금융 교육 전문가입니다. 주식 초보자에게 미국 시장 뉴스를 쉽게 설명합니다.
+
+## 오늘의 시장 스냅샷
+{json.dumps(market_snapshot, ensure_ascii=False, indent=2)}
+
+## 미국 시장 뉴스 헤드라인 (영문)
+{json.dumps(headlines, ensure_ascii=False, indent=2)}
+
+## 작업
+1. 각 헤드라인을 자연스러운 한국어로 번역 (직역 X, 의역 O, 한국 독자에게 와닿는 표현)
+2. 전체 뉴스 + 시장 스냅샷을 종합한 해설 5줄 작성:
+   - 초보 투자자도 이해 가능한 쉬운 용어 (전문용어는 괄호로 설명)
+   - 각 줄 짧고 명확하게 (한 줄 50자 이내)
+   - 1~3줄: 오늘 핵심 흐름 요약
+   - 4줄: 시장에 미칠 영향
+   - 5줄: 초보 투자자가 주의할 점 또는 교훈
+
+## 출력 형식 (반드시 유효한 JSON, 다른 텍스트 금지)
+{{
+  "translations": ["번역1", "번역2", ...],
+  "summary_lines": ["줄1", "줄2", "줄3", "줄4", "줄5"]
+}}
+"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.4,
+        },
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=30)
+        r.raise_for_status()
+        text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except Exception as e:
+        print(f"[WARN] Gemini 분석: {e}")
+        return None
+
+
 def one_liner(indices: dict, btc_chg: float | None) -> str:
-    """오늘 시장 한마디 자동 생성"""
     sp = indices.get("S&P 500", {}).get("change_pct", 0)
     nq = indices.get("Nasdaq", {}).get("change_pct", 0)
 
     if sp > 1 and nq > 1:
-        mood = "강세"
-        comment = "위험선호 심리 우세"
+        mood, comment = "강세", "위험선호 심리 우세"
     elif sp < -1 and nq < -1:
-        mood = "약세"
-        comment = "매도 압력 지속"
+        mood, comment = "약세", "매도 압력 지속"
     elif abs(sp) < 0.3:
-        mood = "혼조"
-        comment = "방향성 탐색 중"
+        mood, comment = "혼조", "방향성 탐색 중"
     else:
-        mood = "보합"
-        comment = "관망세"
+        mood, comment = "보합", "관망세"
 
     crypto_note = ""
     if btc_chg is not None:
@@ -180,9 +237,8 @@ def one_liner(indices: dict, btc_chg: float | None) -> str:
     return f"주식 {mood} ({comment}{crypto_note})"
 
 
-def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
+def format_briefing(indices, movers, afterhours, coins, kimchi, news, ai) -> str:
     now_kst = datetime.now(KST).strftime("%H:%M KST")
-    today = datetime.now(KST).strftime("%Y-%m-%d")
     lines = []
 
     # ── 미국 주식 ──
@@ -192,7 +248,6 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
             a = arrow(d["change_pct"])
             lines.append(f"• {name}: {d['close']:,.2f} {a} {fmt_pct(d['change_pct'])} — {d['date']} 마감")
 
-        # 주목 종목 (1.5% 이상 변동만)
         big = [s for s in movers if abs(s["change_pct"]) >= 1.5][:6]
         if big:
             lines.append("")
@@ -200,19 +255,32 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
             parts = [f"{s['symbol']} {arrow(s['change_pct'])} {fmt_pct(s['change_pct'])}" for s in big]
             lines.append("• " + " · ".join(parts))
 
-        # 시간외
         if afterhours:
             lines.append("")
             lines.append("*시간외 거래*")
             for s in afterhours[:4]:
                 lines.append(f"• {s['symbol']} {arrow(s['change_pct'])} {fmt_pct(s['change_pct'])} (after-hours, ${s['post_market']})")
 
-        # 뉴스 헤드라인
+        # 헤드라인 (한글 번역 + 출처 링크)
         if news:
             lines.append("")
-            lines.append("*주요 헤드라인*")
-            for n in news[:3]:
-                lines.append(f"• {n['title']}")
+            lines.append("*📰 주요 헤드라인*")
+            translations = ai.get("translations", []) if ai else []
+            for i, n in enumerate(news[:5]):
+                title = translations[i] if i < len(translations) else n["title"]
+                title = md_escape(title)
+                link = n.get("link", "")
+                if link:
+                    lines.append(f"• [{title}]({link})")
+                else:
+                    lines.append(f"• {title}")
+
+        # 5줄 해설
+        if ai and ai.get("summary_lines"):
+            lines.append("")
+            lines.append("*🔍 오늘의 해설 (초보자용)*")
+            for s in ai["summary_lines"][:5]:
+                lines.append(f"_{s}_")
 
     # ── 암호화폐 ──
     btc = next((c for c in coins if c["symbol"] == "btc"), None)
@@ -228,7 +296,6 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
             chg = eth.get("price_change_percentage_24h") or 0
             lines.append(f"• ETH: ${eth['current_price']:,.2f} {arrow(chg)} {fmt_pct(chg)}")
 
-        # 알트 5% 이상
         big_alts = [
             c for c in coins
             if c["symbol"] not in ("btc", "eth")
@@ -243,7 +310,6 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
             ]
             lines.append("• " + " | ".join(parts))
 
-        # 김치프리미엄
         if kimchi:
             sign = "+" if kimchi["premium_pct"] > 0 else ""
             lines.append("")
@@ -252,7 +318,6 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
                 f" (업비트 ₩{kimchi['upbit_btc_krw']:,} vs 바이낸스 ${kimchi['binance_btc_usdt']:,} · 환율 {kimchi['usd_krw']:,}원)"
             )
 
-    # ── 한마디 ──
     btc_chg = btc.get("price_change_percentage_24h") if btc else None
     lines.append("")
     lines.append("---")
@@ -263,7 +328,12 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news) -> str:
 
 def send_telegram(text: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True,
+    }
     r = requests.post(url, json=payload, timeout=15)
     result = r.json()
     if not result.get("ok"):
@@ -296,8 +366,12 @@ def main():
     print("📰 시장 뉴스 수집...")
     news = fetch_market_news()
 
+    btc = next((c for c in coins if c["symbol"] == "btc"), None)
+    print("🤖 Gemini 뉴스 번역 + 해설 생성..." if GEMINI_API_KEY else "⚠️  GEMINI_API_KEY 없음 — 영문 헤드라인만 표시")
+    ai = gemini_translate_and_analyze(news, indices, btc)
+
     print("📝 브리핑 포맷팅...")
-    briefing = format_briefing(indices, movers, afterhours, coins, kimchi, news)
+    briefing = format_briefing(indices, movers, afterhours, coins, kimchi, news, ai)
 
     print("\n--- 생성된 브리핑 ---")
     print(briefing)
