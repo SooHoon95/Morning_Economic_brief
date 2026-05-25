@@ -2,8 +2,8 @@ name: 매일 아침 브리핑
 
 on:
   schedule:
-    # 매일 오전 7시 30분 KST = 전날 22:30 UTC
-    - cron: '30 22 * * *'
+    # 매일 오전 9시 KST = 전날 00:00 UTC
+    - cron: '0 0 * * *'
   workflow_dispatch:  # GitHub UI에서 수동 실행 가능
 
 jobs:
