@@ -161,37 +161,60 @@ def fetch_market_news() -> list:
 
 
 def gemini_translate_and_analyze(news: list, indices: dict, btc: dict | None) -> dict | None:
-    """Gemini로 뉴스 한글 번역 + 초보자용 5줄 해설"""
+    """Gemini로 뉴스 한글 번역 + 경제 맥락 / 금리 영향 / 실생활 영향 해설"""
     if not GEMINI_API_KEY or not news:
         return None
 
     headlines = [n["title"] for n in news[:5]]
-    market_snapshot = {
-        "indices": {k: v.get("change_pct") for k, v in indices.items()},
-        "btc_24h_change": round(btc.get("price_change_percentage_24h") or 0, 2) if btc else None,
-    }
+    sp_chg = indices.get("S&P 500", {}).get("change_pct", 0)
+    nq_chg = indices.get("Nasdaq", {}).get("change_pct", 0)
+    btc_chg = round(btc.get("price_change_percentage_24h") or 0, 2) if btc else None
 
-    prompt = f"""당신은 친절한 금융 교육 전문가입니다. 주식 초보자에게 미국 시장 뉴스를 쉽게 설명합니다.
+    prompt = f"""당신은 경제 교육 전문가입니다. 투자 경험이 없는 일반인도 이해할 수 있도록 미국 시장 뉴스를 해설합니다.
 
-## 오늘의 시장 스냅샷
-{json.dumps(market_snapshot, ensure_ascii=False, indent=2)}
+## 오늘의 시장 데이터
+- S&P 500: {sp_chg:+.2f}%
+- Nasdaq: {nq_chg:+.2f}%
+- BTC 24h: {btc_chg:+.2f}% (없으면 null)
 
 ## 미국 시장 뉴스 헤드라인 (영문)
 {json.dumps(headlines, ensure_ascii=False, indent=2)}
 
-## 작업
-1. 각 헤드라인을 자연스러운 한국어로 번역 (직역 X, 의역 O, 한국 독자에게 와닿는 표현)
-2. 전체 뉴스 + 시장 스냅샷을 종합한 해설 5줄 작성:
-   - 초보 투자자도 이해 가능한 쉬운 용어 (전문용어는 괄호로 설명)
-   - 각 줄 짧고 명확하게 (한 줄 50자 이내)
-   - 1~3줄: 오늘 핵심 흐름 요약
-   - 4줄: 시장에 미칠 영향
-   - 5줄: 초보 투자자가 주의할 점 또는 교훈
+## 작업 지시
 
-## 출력 형식 (반드시 유효한 JSON, 다른 텍스트 금지)
+### 1. 헤드라인 번역
+각 헤드라인을 자연스러운 한국어로 번역. 직역보다 의미 전달 우선.
+
+### 2. 경제적 해석 (2~3문장)
+- 오늘 뉴스들이 경제 전체에서 어떤 의미인지 설명
+- 연준(Fed), 인플레이션, 경기침체, 기업실적 등 관련 개념을 쉽게 설명
+- "이 뉴스가 왜 중요한가"에 답할 것
+
+### 3. 금리 시사점 (2~3문장)
+- 오늘 뉴스가 향후 금리 방향에 미칠 영향 설명
+- 금리가 오른다/내린다/그대로라면 어떤 시그널인지
+- 전문용어는 반드시 괄호로 쉬운 설명 추가 (예: "기준금리(중앙은행이 설정하는 기본 이자율)")
+
+### 4. 나에게 미치는 영향 (항목별, 각 1~2문장)
+실제 생활과 연결되는 영향을 구체적으로:
+- 대출/모기지: 변동금리 대출이 있는 사람이라면?
+- 예금/적금: 은행 이자가 어떻게 바뀔 가능성?
+- 주식 투자: 어떤 섹터(분야)에 유리하거나 불리한가?
+- 환율: 원/달러 환율에 미칠 영향 (해외직구, 여행, 달러 자산)
+- 물가: 일상 소비 물가에 영향이 있다면?
+
+## 출력 형식 (반드시 유효한 JSON만, 다른 텍스트 금지)
 {{
-  "translations": ["번역1", "번역2", ...],
-  "summary_lines": ["줄1", "줄2", "줄3", "줄4", "줄5"]
+  "translations": ["번역1", "번역2", "번역3", "번역4", "번역5"],
+  "economic_interpretation": "경제적 해석 2~3문장",
+  "rate_outlook": "금리 시사점 2~3문장",
+  "personal_impact": {{
+    "대출": "대출/모기지 영향",
+    "예금": "예금/적금 영향",
+    "주식": "주식 투자 영향",
+    "환율": "원달러 환율 영향",
+    "물가": "일상 물가 영향"
+  }}
 }}
 """
 
@@ -200,7 +223,7 @@ def gemini_translate_and_analyze(news: list, indices: dict, btc: dict | None) ->
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "temperature": 0.4,
+            "temperature": 0.3,
         },
     }
 
@@ -275,12 +298,26 @@ def format_briefing(indices, movers, afterhours, coins, kimchi, news, ai) -> str
                 else:
                     lines.append(f"• {title}")
 
-        # 5줄 해설
-        if ai and ai.get("summary_lines"):
+        # 경제적 해석
+        if ai and ai.get("economic_interpretation"):
             lines.append("")
-            lines.append("*🔍 오늘의 해설 (초보자용)*")
-            for s in ai["summary_lines"][:5]:
-                lines.append(f"_{s}_")
+            lines.append("*🌐 경제적 해석*")
+            lines.append(ai["economic_interpretation"])
+
+        # 금리 시사점
+        if ai and ai.get("rate_outlook"):
+            lines.append("")
+            lines.append("*📊 금리 전망*")
+            lines.append(ai["rate_outlook"])
+
+        # 실생활 영향
+        if ai and ai.get("personal_impact"):
+            lines.append("")
+            lines.append("*💬 나에게 미치는 영향*")
+            icons = {"대출": "🏠", "예금": "🏦", "주식": "📈", "환율": "💱", "물가": "🛒"}
+            for key, val in ai["personal_impact"].items():
+                icon = icons.get(key, "•")
+                lines.append(f"{icon} *{key}:* {val}")
 
     # ── 암호화폐 ──
     btc = next((c for c in coins if c["symbol"] == "btc"), None)
