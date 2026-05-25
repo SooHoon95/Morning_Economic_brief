@@ -120,13 +120,42 @@ def fetch_crypto_data() -> list:
 def fetch_kimchi_premium() -> dict | None:
     try:
         r1 = requests.get("https://api.upbit.com/v1/ticker?markets=KRW-BTC", timeout=10)
+        r1.raise_for_status()
         btc_krw = r1.json()[0]["trade_price"]
 
-        r2 = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=10)
-        btc_usdt = float(r2.json()["price"])
+        # 바이낸스 직접 API 또는 CoinGecko fallback
+        btc_usdt = None
+        for url in [
+            "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT",
+            "https://api.binance.us/api/v3/ticker/price?symbol=BTCUSDT",
+        ]:
+            try:
+                r2 = requests.get(url, timeout=8)
+                btc_usdt = float(r2.json()["price"])
+                break
+            except Exception:
+                continue
 
-        r3 = requests.get("https://api.frankfurter.app/latest?from=USD&to=KRW", timeout=10)
-        usd_krw = r3.json()["rates"]["KRW"]
+        if btc_usdt is None:
+            return None
+
+        # 환율: Frankfurter → ExchangeRate-API fallback
+        usd_krw = None
+        for fx_url in [
+            "https://api.frankfurter.app/latest?from=USD&to=KRW",
+            "https://open.er-api.com/v6/latest/USD",
+        ]:
+            try:
+                r3 = requests.get(fx_url, timeout=8)
+                data = r3.json()
+                usd_krw = data.get("rates", {}).get("KRW")
+                if usd_krw:
+                    break
+            except Exception:
+                continue
+
+        if usd_krw is None:
+            return None
 
         premium = (btc_krw - btc_usdt * usd_krw) / (btc_usdt * usd_krw) * 100
         return {
@@ -150,11 +179,17 @@ def fetch_market_news() -> list:
         import xml.etree.ElementTree as ET
         root = ET.fromstring(r.text)
         items = root.findall(".//item")
-        return [
-            {"title": item.findtext("title", ""), "link": item.findtext("link", "")}
-            for item in items[:5]
-            if item.findtext("title")
-        ]
+        results = []
+        for item in items[:5]:
+            title = item.findtext("title", "")
+            if not title:
+                continue
+            # RSS 2.0: link가 텍스트 노드가 아닌 경우 guid로 fallback
+            link = item.findtext("link", "").strip()
+            if not link:
+                link = item.findtext("guid", "").strip()
+            results.append({"title": title, "link": link})
+        return results
     except Exception as e:
         print(f"[WARN] 뉴스: {e}")
         return []
