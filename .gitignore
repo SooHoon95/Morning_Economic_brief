@@ -1,0 +1,17 @@
+# 환경변수 / 시크릿
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
